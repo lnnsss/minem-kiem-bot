@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from asyncio import sleep
+from asyncio import Semaphore, sleep
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -14,9 +14,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------- Инициализация бота с таймаутом ----------
-timeout = aiohttp.ClientTimeout(total=120)
+timeout = aiohttp.ClientTimeout(total=90)  # общий таймаут 90 секунд
 bot = Bot(token=BOT_TOKEN, timeout=timeout)
 dp = Dispatcher()
+
+# ---------- Semaphore для контроля параллельных отправок ----------
+semaphore = Semaphore(3)  # не более 3 одновременных отправок фото
 
 # ---------- Клавиатура ----------
 def build_keyboard() -> InlineKeyboardMarkup:
@@ -25,22 +28,23 @@ def build_keyboard() -> InlineKeyboardMarkup:
 
 # ---------- Отправка фото с повторными попытками ----------
 async def send_photo_retry(chat_id, photo, reply_to_message_id, reply_markup, retries=3):
-    for attempt in range(retries):
-        try:
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=photo,
-                reply_to_message_id=reply_to_message_id,
-                reply_markup=reply_markup
-            )
-            logger.info(f"✅ Комментарий отправлен для сообщения {reply_to_message_id}")
-            return
-        except Exception as e:
-            logger.warning(f"Попытка {attempt+1} не удалась: {e}")
-            await asyncio.sleep(3)
-    logger.error(f"❌ Не удалось отправить фото после {retries} попыток для сообщения {reply_to_message_id}")
+    async with semaphore:
+        for attempt in range(retries):
+            try:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo,
+                    reply_to_message_id=reply_to_message_id,
+                    reply_markup=reply_markup
+                )
+                logger.info(f"✅ Комментарий отправлен для сообщения {reply_to_message_id}")
+                return
+            except Exception as e:
+                logger.warning(f"Попытка {attempt+1} не удалась: {e}")
+                await sleep(2)
+        logger.error(f"❌ Не удалось отправить фото после {retries} попыток для сообщения {reply_to_message_id}")
 
-# ---------- Хендлер новых постов ----------
+# ---------- Хендлер новых постов (fire-and-forget) ----------
 @dp.message(
     F.chat.type == ChatType.SUPERGROUP,
     F.sender_chat != None,
@@ -48,14 +52,17 @@ async def send_photo_retry(chat_id, photo, reply_to_message_id, reply_markup, re
 )
 async def auto_comment(message: Message):
     photo = FSInputFile(IMAGE_PATH)
-    await send_photo_retry(
-        chat_id=message.chat.id,
-        photo=photo,
-        reply_to_message_id=message.message_id,
-        reply_markup=build_keyboard()
+    # Fire-and-forget: не блокируем хендлер
+    asyncio.create_task(
+        send_photo_retry(
+            chat_id=message.chat.id,
+            photo=photo,
+            reply_to_message_id=message.message_id,
+            reply_markup=build_keyboard()
+        )
     )
 
-# ---------- Отладка ----------
+# ---------- Отладка всех апдейтов ----------
 @dp.message()
 async def debug_all(message: Message):
     logger.debug(f"DEBUG: Новое сообщение {message.message_id}, chat_id={message.chat.id}, sender_chat={getattr(message.sender_chat, 'title', None)}")
