@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import json
+from asyncio import sleep
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
@@ -23,6 +25,24 @@ def build_keyboard() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
+# ---------- Функция отправки фото с повторными попытками ----------
+async def send_photo_retry(chat_id, photo, reply_to_message_id, reply_markup, retries=3):
+    for attempt in range(retries):
+        try:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                reply_to_message_id=reply_to_message_id,
+                reply_markup=reply_markup,
+                timeout=120  # увеличенный таймаут
+            )
+            logger.info(f"✅ Комментарий отправлен для сообщения {reply_to_message_id}")
+            return
+        except Exception as e:
+            logger.warning(f"Попытка {attempt+1} не удалась: {e}")
+            await sleep(3)
+    logger.error(f"❌ Не удалось отправить фото после {retries} попыток для сообщения {reply_to_message_id}")
+
 # ---------- Хендлер для новых постов канала в группе обсуждений ----------
 @dp.message(
     F.chat.type == ChatType.SUPERGROUP,
@@ -31,20 +51,13 @@ def build_keyboard() -> InlineKeyboardMarkup:
 )
 async def auto_comment(message: Message):
     """Автоматически отправляет картинку с кнопками как комментарий"""
-    try:
-        photo = FSInputFile(IMAGE_PATH)
-
-        await bot.send_photo(
-            chat_id=message.chat.id,
-            photo=photo,
-            reply_to_message_id=message.message_id,
-            reply_markup=build_keyboard()
-        )
-
-        logger.info(f"✅ Комментарий отправлен для сообщения {message.message_id}")
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка при отправке комментария: {e}")
+    photo = FSInputFile(IMAGE_PATH)
+    await send_photo_retry(
+        chat_id=message.chat.id,
+        photo=photo,
+        reply_to_message_id=message.message_id,
+        reply_markup=build_keyboard()
+    )
 
 # ---------- Для теста: лог всех апдейтов ----------
 # (можно закомментировать после отладки)
